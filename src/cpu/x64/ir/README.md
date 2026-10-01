@@ -100,9 +100,10 @@ step. They are omitted above for clarity.
 The IR is produced in full, then consumed read-only by the allocator and the
 emitter. `generate()` runs a fixed sequence: build the IR, build the register
 configuration, allocate registers, emit the ABI preamble, reserve the spill
-frame, emit the lowered code, tear down the frame, emit the postamble, and write
-the static data. Each kernel assembles this sequence in its own `generate()`
-today. A shared runner for the fixed part is a follow-up.
+frame, emit the lowered code, tear down the frame, emit the postamble, write
+the static data, and print the debug output with `ir::print_kernel_dump()`
+(see Debug Output). Each kernel assembles this sequence in its own
+`generate()` today. A shared runner for the fixed part is a follow-up.
 
 ## Design Principles
 
@@ -149,6 +150,8 @@ today. A shared runner for the fixed part is a follow-up.
   each self-contained.
 * `postops_injector.hpp`, `postops_injector.cpp`: the driver for the JIT post-ops
   injector, which lowers the `inject_postops` operation.
+* `dump.hpp`, `dump.cpp`: the debug output that `ONEDNN_VERBOSE=x64ir` enables
+  (see Debug Output).
 
 The kernel-specific builders live outside this directory. For example,
 `src/cpu/x64/brgemm/brgemv_ir.{hpp,cpp}` holds the GEMV builder and shows how
@@ -215,6 +218,107 @@ Additional rules to follow.
 
 The IR, allocator, and emitter have dedicated unit tests
 (`test_internals_cpu_ir`). IR-based kernels are also tested through benchdnn.
+
+## Debug Output
+
+The IR pipeline can print the IR of each kernel that it generates, after a short
+summary of the kernel. The builder creates the IR in C++ code, so the IR is not
+visible anywhere else. `ONEDNN_JIT_DUMP` shows only the final machine code. In
+machine code, a loop is a label, a decrement, and a conditional jump. In the IR
+dump, a loop is a pair of `loop_begin` and `loop_end` operations around its
+body.
+
+The output is useful in these cases:
+
+* **Checking a builder.** The IR dump shows the loops with their counters and
+  iteration counts, the pointer increments (`add_imm`), the memory offsets, and
+  the data types that the builder produced. A developer can compare them with
+  what the builder code is supposed to produce.
+* **Comparing two versions.** The output does not change from run to run. A
+  `diff` of the output before and after a change shows how the change affected
+  each kernel.
+
+### Enabling the Output
+
+The output can be enabled only in dev-mode builds (`ONEDNN_DEV_MODE=ON`). Add
+the `x64ir` token to `ONEDNN_VERBOSE` to enable it, for example,
+`ONEDNN_VERBOSE=x64ir` or `ONEDNN_VERBOSE=dispatch,x64ir`.
+`ONEDNN_VERBOSE=all` and `debuginfo=` do not enable it. `all` enables the
+standard verbose output, and backend-specific dumps should not mix with it.
+
+The output is printed only when a kernel is generated. A primitive cache hit
+generates no kernel, so it prints nothing.
+
+### Output Format
+
+The example below is a part of the output for a BRGEMM kernel. The lines
+marked `...` are left out.
+
+```
+begin x64ir jit_brgemm_ir_kernel_t isa=avx512_core
+code: 1339 bytes (instructions 1339 bytes, static data 0 bytes)
+
+    0 | load g0, [param+24]
+    1 | load g1, [param+16]
+    2 | load g2, [param+96]
+...
+    9 | jz g8, L0
+   10 | load g0, [param+40]
+   11 | L0:
+   12 | loop g9 = 2 {
+   13 |   vzero f32:v10
+...
+   29 |   mov_reg g28, g1
+   30 |   jz g2, L1
+   31 |   loop g30 = g2 {
+   32 |     load g31, [g28+0]
+...
+   39 |     loop g33 = 16 {
+   40 |       vload f32:v26, f32:[g32+0]
+   41 |       vload f32:v27, f32:[g32+64]
+   42 |       vload_bcast f32:v29, f32:[g31+0]
+   43 |       prefetch [g32+512]
+   44 |       vdot f32:v10, f32:v26, f32:v29
+...
+  154 |     } // g33 -= 1, repeat while > 0
+  155 |   } // g30 -= 1, repeat while > 0
+  156 |   L1:
+...
+  177 |   vstore f32:[g0+0], f32:v10
+...
+  195 | } // g9 -= 1, repeat while > 0
+end x64ir
+```
+
+The lines mean the following:
+
+* `begin x64ir <name> isa=<isa>` starts the output for one kernel. `end x64ir`
+  ends it.
+* `code:` is the size of the kernel in bytes, the same size that
+  `ONEDNN_JIT_DUMP` writes. It is split into the instructions and the static
+  data after the postamble.
+* The IR dump follows after an empty line. Each line has the operation index
+  and the operation. An operation inside a loop is indented by two spaces for
+  each loop around it.
+
+An operation prints as its `op_kind_t` name, then its operands. The
+destination comes first, as in Intel syntax. Operands print as follows:
+
+* `g<id>` and `m<id>` are gpr and mask virtual registers. `<id>` is the
+  `vreg_t` value.
+* `<dt>:v<id>` is a vec virtual register that holds the data type `<dt>`.
+* `[g<id>+<disp>]` is the memory at `g<id>` plus a decimal byte offset.
+  `[param+<disp>]` is a field of the kernel argument struct.
+* `<dt>:[...]` gives the data type in memory of a vector load or store. A
+  converting access shows two types, for example, `vload f32:v3, bf16:[g0+0]`.
+* `L<id>` is an IR label, the target of `jmp` and `jz`.
+
+Two kinds of operations print in a special form:
+
+* `loop g9 = 2 {` is `loop_begin` with the counter `g9` and the iteration count
+  `2`. The count can also be a virtual register, as in `loop g30 = g2 {`.
+  `} // g9 -= 1, repeat while > 0` is `loop_end`.
+* `L0:` is the `label` operation for the label `L0`.
 
 ## References
 
