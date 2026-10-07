@@ -529,7 +529,7 @@ static int fill_grouped_offsets(
 // The values buffer is filled as a contiguous 2D
 // tensor (offsets describe per-group slicing, not value placement)
 static int fill_grouped_data(data_kind_t kind, const prb_t *prb,
-        dnn_mem_t &mem_dt, dnn_mem_t &mem_fp, res_t *res) {
+        const cfg_t &cfg, dnn_mem_t &mem_dt, dnn_mem_t &mem_fp, res_t *res) {
     if (kind != SRC && kind != WEI) {
         BENCHDNN_PRINT(0,
                 "Error: grouped filling only supports SRC or WEI, got "
@@ -547,25 +547,19 @@ static int fill_grouped_data(data_kind_t kind, const prb_t *prb,
 
     if (has_bench_mode_modifier(mode_modifier_t::no_ref_memory)) return OK;
 
-    cfg_t cfg(prb, {SRC, WEI, BIA, DST});
-
     // Fill values buffer
     fill_dense_fp_values(kind, prb, cfg, mem_fp);
 
-    // Create a dense view for the values buffer of the grouped memory,
-    // so that we could use reorder (e.g. to transpose) into ref memory,
-    // that is always 2D row-major concatenated by expert
-    const int arg = kind == SRC ? DNNL_ARG_SRC : DNNL_ARG_WEIGHTS;
-    const int var_idx = prb->sparse_options.get_variable_dim_idx(arg);
-    dnnl_dims_t g_dims = {mem_dt.dims()[0], mem_dt.dims()[1]};
-    dims_t val_strides(2);
-    val_strides[var_idx] = g_dims[1 - var_idx];
-    val_strides[1 - var_idx] = 1;
-    auto val_md
-            = dnn_mem_t::init_md(2, g_dims, mem_dt.dt(), tag::any, val_strides);
-    dnn_mem_t vals_view(val_md, mem_fp.engine(), /* prefill = */ false,
-            {true, mem_dt.get_mapped_pointer<void>(0)});
-    SAFE(vals_view.reorder(mem_fp, res, cfg.get_swapped_dt(kind)), WARN);
+    // Ref memory is grouped with the same layout, so values are reordered as
+    // flat buffers
+    const dnnl_dims_t vals_dims = {mem_dt.nelems()};
+    auto fp_vals = dnn_mem_t::create_from_host_ptr(
+            dnn_mem_t::init_md(1, vals_dims, dnnl_f32, tag::abx),
+            mem_fp.engine(), mem_fp.get_mapped_pointer<void>(0));
+    auto dt_vals = dnn_mem_t::create_from_host_ptr(
+            dnn_mem_t::init_md(1, vals_dims, mem_dt.dt(), tag::abx),
+            mem_fp.engine(), mem_dt.get_mapped_pointer<void>(0));
+    SAFE(dt_vals.reorder(fp_vals, res), WARN);
 
     return OK;
 }
@@ -592,7 +586,7 @@ int fill_data(data_kind_t kind, int exec_arg, const prb_t *prb,
     }
 
     if (prb->sparse_options.is_grouped(exec_arg)) {
-        SAFE(fill_grouped_data(kind, prb, mem_dt, mem_fp, res), WARN);
+        SAFE(fill_grouped_data(kind, prb, cfg, mem_dt, mem_fp, res), WARN);
         return OK;
     }
 
@@ -849,8 +843,8 @@ int init_ref_memory_args(dnn_mem_map_t &ref_mem_map, dnn_mem_map_t &mem_map,
                                 /* prefill = */ false));
             }
         } else {
-            // Grouped SRC (2Dx2D and 2Dx3D) and grouped WEI (2Dx2D) use the
-            // tag::abx (row-major) path below
+            // Grouped args (SRC, DST for 2Dx3D; SRC, WEI for 2Dx2D) use
+            // grouped f32 ref memory with the same layout
             if (exec_arg == DNNL_ARG_WEIGHTS
                     && !prb->sparse_options.is_grouped(DNNL_ARG_WEIGHTS)) {
                 const auto ndims = mem.ndims();
@@ -867,6 +861,12 @@ int init_ref_memory_args(dnn_mem_map_t &ref_mem_map, dnn_mem_map_t &mem_map,
                 strides[ndims - 1] = dims[ndims - 2];
                 ref_mem_map.emplace(exec_arg,
                         dnn_mem_t(mem.md_, dnnl_f32, strides, ref_engine,
+                                /* prefill = */ false));
+            } else if (prb->sparse_options.is_grouped(exec_arg)) {
+                auto grouped_fp_md = create_grouped_md(
+                        prb, exec_arg2data_kind(exec_arg), dnnl_f32);
+                ref_mem_map.emplace(exec_arg,
+                        dnn_mem_t(grouped_fp_md, ref_engine,
                                 /* prefill = */ false));
             } else if (exec_arg != DNNL_ARG_SCRATCHPAD) {
                 // Scratchpad memory relates to a primitive. If reference needs
@@ -885,8 +885,11 @@ int init_ref_memory_args(dnn_mem_map_t &ref_mem_map, dnn_mem_map_t &mem_map,
         }
 
         // Offsets are read by the library, fill them in any mode
-        if (is_grouped_mem)
+        if (is_grouped_mem) {
             SAFE(fill_grouped_offsets(mem, prb->sparse_options), WARN);
+            if (has_grouped_encoding(ref_mem.md_))
+                SAFE(fill_grouped_offsets(ref_mem, prb->sparse_options), WARN);
+        }
 
         switch (exec_arg) {
             case DNNL_ARG_SRC:
