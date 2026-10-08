@@ -17,6 +17,7 @@
 #ifndef CPU_X64_IR_REG_ALLOC_HPP
 #define CPU_X64_IR_REG_ALLOC_HPP
 
+#include <cstdint>
 #include <vector>
 
 #include "common/utils.hpp"
@@ -113,6 +114,12 @@ struct reg_pools_t {
     std::vector<reg_file_t> files;
     std::vector<int> kind_to_file;
 };
+
+// Computes liveness for `ir`. On return, `live_in[i][v]` is 1 when virtual
+// register `v` is live on entry to operation `i`, and 0 otherwise (see
+// `reg_alloc.cpp`).
+void compute_liveness(
+        const ir_t &ir, std::vector<std::vector<int8_t>> &live_in);
 
 // Export for testing.
 reg_alloc_result_t DNNL_API allocate_registers(

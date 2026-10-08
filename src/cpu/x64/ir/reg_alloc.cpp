@@ -177,8 +177,6 @@ namespace cpu {
 namespace x64 {
 namespace ir {
 
-namespace {
-
 // Compute liveness for each operation `i`.
 //
 // A value is `live` at operation `i` if some future operation may still
@@ -297,6 +295,8 @@ void compute_liveness(
         }
     }
 }
+
+namespace {
 
 // Compute the loop nesting depth of each operation. `compute_spill_weights()`
 // later turns each depth into a weight.
