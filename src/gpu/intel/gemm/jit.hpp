@@ -86,6 +86,10 @@ struct gen_t : public primitive_t {
 
         DECLARE_COMMON_PD_T("jit:gemm:any", gen_t);
 
+        // A floating-point weights zero point is applied when the weights
+        // are up-converted (weights decompression), not in integer compute.
+        bool fp_weights_zero_points_ok() const override { return wei_decomp_; }
+
         status_t init(const impl::engine_t *engine) {
             using namespace prop_kind;
             using namespace data_type;

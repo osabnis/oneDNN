@@ -180,6 +180,15 @@ static inline status_t sdpa_attr_check(const memory_desc_t *q_desc,
             && vs_attr->has_default_values()) {
         return status::success;
     }
+    // Floating-point weights zero points are for matmul weights
+    // decompression only, see primitive_desc_t::fp_weights_zero_points_ok().
+    VCHECK_SDPA_UNIMPL(
+            IMPLICATION(kq_attr,
+                    !kq_attr->zero_points_.has_fp_weights_zero_points())
+                    && IMPLICATION(vs_attr,
+                            !vs_attr->zero_points_
+                                    .has_fp_weights_zero_points()),
+            VERBOSE_UNSUPPORTED_ZP_CFG);
 
     using namespace dnnl::impl::data_type;
     if (kq_attr && !kq_attr->has_default_values()) {

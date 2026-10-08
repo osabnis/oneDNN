@@ -220,15 +220,21 @@ TEST_F(attr_test_t, TestZeroPointsDataTypes) {
 
     const std::vector<data_type> supported_dts = {data_type::s32, data_type::s8,
             data_type::u8, data_type::s4, data_type::u4};
-    const std::vector<data_type> unsupported_dts
+    const std::vector<data_type> fp_dts
             = {data_type::f32, data_type::f16, data_type::bf16};
 
     for (auto arg : supported_args) {
         for (auto dt : supported_dts) {
             attr.set_zero_points(arg, 1 << 0, {}, dt);
         }
-        for (auto dt : unsupported_dts) {
-            EXPECT_ANY_THROW(attr.set_zero_points(arg, 0, {}, dt));
+        for (auto dt : fp_dts) {
+            // floating-point zero points: weights only, not on the host
+            if (arg == DNNL_ARG_WEIGHTS) {
+                attr.set_zero_points(arg, 1 << 0, {}, dt);
+                attr.set_zero_points(arg, (1 << 0) | (1 << 1), {4, 1}, dt);
+            } else {
+                EXPECT_ANY_THROW(attr.set_zero_points(arg, 0, {}, dt));
+            }
             EXPECT_ANY_THROW(attr.set_zero_points(arg, 0, {}, dt, true));
             EXPECT_ANY_THROW(attr.set_host_zero_point(arg, dt));
         }
@@ -244,8 +250,36 @@ TEST_F(attr_test_t, TestZeroPointsDataTypes) {
                 EXPECT_ANY_THROW(attr.set_zero_points(arg, 0, {}, dt));
             }
         }
-        for (auto dt : unsupported_dts) {
+        for (auto dt : fp_dts) {
             EXPECT_ANY_THROW(attr.set_zero_points(arg, 0, {}, dt));
+        }
+    }
+}
+
+// Floating-point weights zero points are only computed by implementations
+// that opt in, for weights decompression. No implementation may take them for
+// integer computation or for convolution.
+TEST_F(attr_test_t, TestFPWeightsZeroPointsNotOptedIn) {
+    engine e {get_test_engine_kind(), 0};
+
+    memory::desc mm_src_md {{4, 64}, data_type::s8, tag::any};
+    memory::desc mm_wei_md {{64, 32}, data_type::s8, tag::any};
+    memory::desc mm_dst_md {{4, 32}, data_type::f32, tag::any};
+    memory::desc conv_src_md {{2, 16, 8, 8}, data_type::u8, tag::any};
+    memory::desc conv_wei_md {{16, 16, 3, 3}, data_type::s8, tag::any};
+    memory::desc conv_dst_md {{2, 16, 8, 8}, data_type::f32, tag::any};
+
+    for (auto dt : {data_type::f16, data_type::bf16, data_type::f32}) {
+        for (int mask : {0, 1 << 1}) {
+            primitive_attr attr;
+            attr.set_zero_points(DNNL_ARG_WEIGHTS, mask, {}, dt);
+            EXPECT_ANY_THROW(matmul::primitive_desc(
+                    e, mm_src_md, mm_wei_md, mm_dst_md, attr));
+            if (mask != 0) continue; // convolution takes a common one only
+            EXPECT_ANY_THROW(convolution_forward::primitive_desc(e,
+                    prop_kind::forward_inference, algorithm::convolution_direct,
+                    conv_src_md, conv_wei_md, conv_dst_md, {1, 1}, {1, 1},
+                    {1, 1}, attr));
         }
     }
 }

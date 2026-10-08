@@ -702,7 +702,13 @@ status_t dnnl_primitive_attr_set_zero_points_v2(dnnl_primitive_attr_t attr,
 
     VCHECK_ATTR(attr, VERBOSE_NULL_ARG);
     VCHECK_ATTR(arg >= 0, VERBOSE_BAD_PARAM, "arg");
-    VCHECK_ATTR(utils::one_of(data_type, s32, s8, u8, s4, u4, u2),
+    // Floating-point zero points are for weights decompression only. An
+    // implementation computes them only if it opts in, see
+    // primitive_desc_t::fp_weights_zero_points_ok().
+    VCHECK_ATTR(utils::one_of(data_type, s32, s8, u8, s4, u4, u2)
+                    || (utils::one_of(data_type, f32, bf16, f16) && !is_on_host
+                            && utils::one_of(arg, DNNL_ARG_WEIGHTS,
+                                    DNNL_ARG_WEIGHTS_1, DNNL_ARG_WEIGHTS_2)),
             VERBOSE_INVALID_DATATYPE, "zero points");
     VCHECK_ATTR(IMPLICATION(utils::one_of(data_type, s4, u4, u2), mask > 0),
             VERBOSE_BAD_PARAM, "mask with sub-byte data type");

@@ -389,6 +389,10 @@ struct gemm_t : public primitive_t {
             return status::success;
         }
 
+        bool fp_weights_zero_points_ok() const override {
+            return gemm_pd_ && gemm_pd_->fp_weights_zero_points_ok();
+        }
+
         std::shared_ptr<primitive_desc_t> gemm_pd_;
         sum_ab_t sum_ab_ = sum_ab::sum_none;
         data_type_t sum_ab_type_ = data_type::undef;

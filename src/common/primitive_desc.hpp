@@ -91,6 +91,11 @@ struct primitive_desc_t {
     virtual ~primitive_desc_t() = default;
     virtual primitive_desc_t *clone() const = 0;
 
+    // True if the implementation supports f32/bf16/f16 weights zero points.
+    // The attribute API accepts them for weights arguments, but `create()`
+    // rejects them for implementations that do not opt in.
+    virtual bool fp_weights_zero_points_ok() const { return false; }
+
     const primitive_attr_t *attr() const { return &attr_; }
     primitive_kind_t kind() const { return kind_; }
 
@@ -598,6 +603,9 @@ protected:
         // Dispatch to proper pd->init(...) happens through `pd_init_t`.
         CHECK(pd_init_t<pd_t::base_pkind>::call(
                 _pd.get(), engine, src_engine, dst_engine));
+        if (_pd->attr()->zero_points_.has_fp_weights_zero_points()
+                && !_pd->fp_weights_zero_points_ok())
+            return unimplemented;
         CHECK(_pd->init_scratchpad_md());
         return safe_ptr_assign(*pd, _pd.release());
     }

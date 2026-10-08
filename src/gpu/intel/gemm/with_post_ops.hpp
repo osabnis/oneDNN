@@ -48,6 +48,10 @@ struct with_post_ops_t : public primitive_t {
             return pd_->query(what, idx, result);
         }
 
+        bool fp_weights_zero_points_ok() const override {
+            return pd_ && pd_->fp_weights_zero_points_ok();
+        }
+
         std::shared_ptr<primitive_desc_t> pd_;
         bool use_scratchpad_with_post_op_worker = false;
         bool use_reorder = false;

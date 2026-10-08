@@ -382,6 +382,20 @@ struct zero_points_t : public quant_entries_t {
         return quant_entries_t::has_default_data_type(arg);
     }
 
+    // True if a weights argument has a floating-point zero point. Only
+    // implementations that opt in compute those, see
+    // primitive_desc_t::fp_weights_zero_points_ok().
+    bool has_fp_weights_zero_points() const {
+        for (int arg :
+                {DNNL_ARG_WEIGHTS, DNNL_ARG_WEIGHTS_1, DNNL_ARG_WEIGHTS_2}) {
+            if (!has_default_values(arg)
+                    && utils::one_of(get_data_type(arg), data_type::f32,
+                            data_type::bf16, data_type::f16))
+                return true;
+        }
+        return false;
+    }
+
     static zero_points_t deserialize(deserializer_t &d);
 
 private:

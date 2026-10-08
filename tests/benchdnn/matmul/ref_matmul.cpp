@@ -75,7 +75,8 @@ struct chunk_params_t {
     std::vector<std::pair<int, int>> v_po_masks;
 
     // Pre-fetched single-value quant params (valid when has_*_single_* is true).
-    int src_zp_single = 0, wei_zp_single = 0;
+    int src_zp_single = 0;
+    float wei_zp_single = 0; // may be a floating-point zero point
     float src_scale_single = 1.f, wei_scale_single = 1.f;
 
     // Data types
@@ -204,7 +205,7 @@ static void compute_ref_matmul_chunk(const chunk_params_t &p, int64_t M,
     // Mutable per-element quant params; initialised to the single value when
     // applicable and overwritten per K-group otherwise.
     int src_zp = p.src_zp_single;
-    int wei_zp = p.wei_zp_single;
+    float wei_zp = p.wei_zp_single;
     float src_scale = p.src_scale_single;
     float wei_scale = p.wei_scale_single;
 

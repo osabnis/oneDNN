@@ -1,0 +1,20 @@
+# Weights decompression with floating-point weights zero points, as in
+# asymmetric 4-bit formats whose zero point is not an integer (GGUF Q4_K:
+# w = d * q - m, zero point m / d).
+# f16 zero points only: implementations without support for a type (f32, bf16) return
+# unimplemented, which benchdnn counts as a failure in a batch.
+--reset
+--dt=f16:u4:f16,f16:s4:f16,f16:u8:f16
+--wtag=any,ab,ba
+--attr-fpmath=f16:true
+--attr-scales=wei:per_ocic:f16:32x1
+--attr-zero-points=wei:per_ocic:f16:32x1
+1x2048:2048x6144
+4x1536:1536x8192
+64x2048:2048x2048
+512x1536:1536x2048
+
+--attr-scales=wei:per_oc:f16
+--attr-zero-points=wei:per_oc:f16
+1x2048:2048x6144
+64x2048:2048x2048
