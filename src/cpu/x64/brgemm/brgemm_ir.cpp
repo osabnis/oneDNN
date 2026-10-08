@@ -699,7 +699,7 @@ struct jit_brgemm_ir_kernel_t : public brgemm_kernel_t {
         ir::emit_data_section(*this, data);
 
         // Debug output (see `ir/dump.hpp`). Prints nothing unless enabled.
-        ir::print_kernel_dump(*this, ir, data);
+        ir::print_kernel_dump(*this, ir, data, reg_cfg, alloc);
     }
 
 private:

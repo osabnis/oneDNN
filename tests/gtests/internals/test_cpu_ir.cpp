@@ -1483,23 +1483,94 @@ std::vector<std::string> split_columns(const std::string &s) {
 }
 
 // An operand as the IR dump prints it: the letter of its kind (`g`, `v`, `m`,
-// or `L` for a label), its id, and its data type prefix (empty when there is
-// none). For example, `f32:v5` is ('v', 5, "f32").
-using operand_t = std::tuple<char, int, std::string>;
+// or `L` for a label), its id, its data type prefix, and its location after
+// `@`. The prefix and the location are empty when there is none. For example,
+// `f32:v5@ymm2` is ('v', 5, "f32", "ymm2"), and `g3@[rsp+8](temp rax)` is
+// ('g', 3, "", "[rsp+8](temp rax)").
+using operand_t = std::tuple<char, int, std::string, std::string>;
 
 // Return the operands in `text`. A match must be a whole word, so `vload` or
 // `bf16` do not count. A data type prefix belongs to the operand that follows
-// it, so the match cannot start at the `:`.
+// it, so the match cannot start at the `:`. A location after `@` belongs to
+// the operand before it, so it is part of the match.
 std::set<operand_t> operands(const std::string &text) {
     static const std::regex re(
             "(^|[^A-Za-z0-9_:])(?:([a-z0-9_]+):)?([gvmL])"
-            "([0-9]+)(?![A-Za-z0-9_])");
+            "([0-9]+)(?![A-Za-z0-9_])"
+            "(?:@(\\[rsp\\+[0-9]+\\](?:\\((?:temp [a-z0-9]+|no temp)\\))?"
+            "|[a-z0-9]+))?");
     std::set<operand_t> ops;
     for (std::sregex_iterator it(text.begin(), text.end(), re), end; it != end;
             ++it)
-        ops.insert(operand_t {
-                (*it)[3].str()[0], std::stoi((*it)[4].str()), (*it)[2].str()});
+        ops.insert(operand_t {(*it)[3].str()[0], std::stoi((*it)[4].str()),
+                (*it)[2].str(), (*it)[5].str()});
     return ops;
+}
+
+// Returns the register configuration that an IR kernel for `isa` uses. When
+// `n_regs` is not negative, each register file keeps at most `n_regs`
+// registers, so that the allocation spills.
+reg_config_t make_kernel_reg_config(cpu_isa_t isa, int n_regs = -1) {
+    reg_config_t rc = make_reg_config(isa, abi_param1.getIdx(),
+            Xbyak::Operand::RSP, {eltwise_opmask, binary_tail_opmask});
+    if (n_regs >= 0)
+        for (reg_file_t &file : rc.pools.files)
+            if ((int)file.regs.size() > n_regs) file.regs.resize(n_regs);
+    return rc;
+}
+
+// The register allocation of an IR, and the kernel facts that the debug output
+// reads. `info` points to the other members, so the struct is not copied.
+struct dump_input_t {
+    reg_config_t reg_cfg;
+    reg_alloc_result_t alloc;
+    kernel_info_t info;
+
+    dump_input_t(const ir_t &ir, cpu_isa_t isa, int n_regs = -1)
+        : reg_cfg(make_kernel_reg_config(isa, n_regs)) {
+        alloc = allocate_registers(ir, reg_cfg.pools);
+        info.name = "test_kernel";
+        info.isa = isa;
+        info.code_size = 123;
+        info.data_size = 23;
+        info.reg_cfg = &reg_cfg;
+        info.alloc = &alloc;
+    }
+    dump_input_t(const dump_input_t &) = delete;
+    dump_input_t &operator=(const dump_input_t &) = delete;
+};
+
+// Returns the name of physical register `phys` for a vreg of `kind`, the name
+// that the emitter uses. The AVX-512 backend keeps a vec in a `zmm` and a mask
+// in a `k` register. The AVX2 backend keeps both in a `ymm`.
+std::string phys_name(cpu_isa_t isa, reg_kind_t kind, int phys) {
+    const bool is_avx512 = is_superset(isa, avx512_core);
+    switch (kind) {
+        case reg_kind_t::gpr: return Xbyak::Reg64(phys).toString();
+        case reg_kind_t::vec:
+            return is_avx512 ? Xbyak::Zmm(phys).toString()
+                             : Xbyak::Ymm(phys).toString();
+        case reg_kind_t::mask:
+            return is_avx512 ? Xbyak::Opmask(phys).toString()
+                             : Xbyak::Ymm(phys).toString();
+    }
+    return "";
+}
+
+// Returns the location of vreg `v` that the IR dump must show at operation
+// `i`: the physical register of a vreg in a register, or the stack slot of a
+// spilled vreg and its temp at `i`, or `no temp` when `i` has no temp for it.
+std::string expected_location(
+        const ir_t &ir, const dump_input_t &in, int v, int i) {
+    const assignment_t &a = in.alloc.assignments[v];
+    const reg_kind_t kind = ir.vreg_info()[v].kind;
+    if (!a.spilled) return phys_name(in.info.isa, kind, a.phys);
+
+    const std::string slot = "[rsp+" + std::to_string(a.slot) + "]";
+    for (const temp_reg_t &t : in.alloc.temps[i])
+        if ((int)t.vreg == v)
+            return slot + "(temp " + phys_name(in.info.isa, kind, t.phys) + ")";
+    return slot + "(no temp)";
 }
 
 // An IR with at least one operation of every kind, so the IR dump checks
@@ -1573,11 +1644,17 @@ TEST(DumpTests, OutputIsOffUnlessRequested) {
 // vregs come from `def_use()`, the same source that liveness uses, so an IR
 // dump that drops, adds, or misnames an operand fails here. The letter of each
 // vreg must match its kind, and a vec vreg must show its data type.
+//
+// With the register allocation, each vreg must also show the location that
+// the allocation gives it, with the temp of a spilled vreg at the operation.
+// Pools of 2 registers keep some vregs in registers and spill the others.
 TEST(DumpTests, IrDumpShowsEachOperationWithItsVregs) {
     const ir_t ir = build_every_op_ir();
 
     // Checks the operation lines in `lines`, which start at op 0.
-    const auto check = [&](const std::vector<std::string> &lines) {
+    // `in` is the allocation, or null for the IR dump without it.
+    const auto check = [&](const std::vector<std::string> &lines,
+                               const dump_input_t *in) {
         ASSERT_EQ((int)lines.size(), ir.n_ops());
         const char kind_letter[] = {'g', 'v', 'm'}; // gpr, vec, mask
         std::vector<int> defs, uses;
@@ -1585,7 +1662,7 @@ TEST(DumpTests, IrDumpShowsEachOperationWithItsVregs) {
             const std::string &line = lines[i];
             SCOPED_TRACE(line);
             const std::vector<std::string> cols = split_columns(line);
-            ASSERT_EQ(cols.size(), 2u);
+            ASSERT_EQ(cols.size(), in ? 3u : 2u);
             EXPECT_EQ(std::stoi(cols.front()), i);
 
             const op_t &op = ir.ops()[i];
@@ -1596,16 +1673,31 @@ TEST(DumpTests, IrDumpShowsEachOperationWithItsVregs) {
                     const vreg_info_t &info = ir.vreg_info()[v];
                     const bool is_vec = info.kind == reg_kind_t::vec;
                     expected.insert(operand_t {kind_letter[(int)info.kind], v,
-                            is_vec ? dnnl_dt2str(info.dt) : ""});
+                            is_vec ? dnnl_dt2str(info.dt) : "",
+                            in ? expected_location(ir, *in, v, i) : ""});
                 }
             if (op.label_id != label_t::none)
-                expected.insert(operand_t {'L', (int)op.label_id, ""});
+                expected.insert(operand_t {'L', (int)op.label_id, "", ""});
 
             EXPECT_EQ(operands(cols.back()), expected);
         }
     };
 
-    check(split_lines(to_string(ir)));
+    {
+        SCOPED_TRACE("without allocation");
+        check(split_lines(to_string(ir)), nullptr);
+    }
+    for (cpu_isa_t isa : {avx2, avx512_core}) {
+        SCOPED_TRACE("isa " + std::to_string((int)isa));
+        const dump_input_t in(ir, isa, /*n_regs=*/2);
+        ASSERT_TRUE(in.alloc.any_spill);
+
+        // The first line is the header of the columns.
+        std::vector<std::string> lines = split_lines(to_string(ir, in.info));
+        ASSERT_FALSE(lines.empty());
+        lines.erase(lines.begin());
+        check(lines, &in);
+    }
 }
 
 // Checks the structure that tools rely on. The output for a kernel has exactly
@@ -1614,13 +1706,9 @@ TEST(DumpTests, IrDumpShowsEachOperationWithItsVregs) {
 // dump is between the two lines.
 TEST(DumpTests, OutputIsFramed) {
     const ir_t ir = build_every_op_ir();
-    kernel_info_t info;
-    info.name = "test_kernel";
-    info.isa = avx2;
-    info.code_size = 123;
-    info.data_size = 23;
+    const dump_input_t in(ir, avx2);
 
-    const std::string s = format_kernel_dump(info, ir);
+    const std::string s = format_kernel_dump(in.info, ir);
     const std::vector<std::string> lines = split_lines(s);
     ASSERT_GE(lines.size(), 2u);
 
@@ -1634,7 +1722,7 @@ TEST(DumpTests, OutputIsFramed) {
             n_markers++;
     EXPECT_EQ(n_markers, 2);
 
-    EXPECT_NE(s.find(to_string(ir)), std::string::npos);
+    EXPECT_NE(s.find(to_string(ir, in.info)), std::string::npos);
 }
 
 } // namespace dnnl

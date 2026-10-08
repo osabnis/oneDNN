@@ -621,7 +621,7 @@ struct jit_brgemv_ir_kernel_t : public brgemm_kernel_t {
         if (postops_injector) postops_injector->maybe_prepare_table();
 
         // Debug output (see `ir/dump.hpp`). Prints nothing unless enabled.
-        ir::print_kernel_dump(*this, ir, data);
+        ir::print_kernel_dump(*this, ir, data, reg_cfg, alloc);
     }
 
 private:
