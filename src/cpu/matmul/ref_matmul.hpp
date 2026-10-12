@@ -105,7 +105,8 @@ struct ref_matmul_t : public primitive_t {
                                     | smask_t::post_ops | smask_t::sum_dt
                                     | smask_t::fpmath_mode | smask_t::dropout
                                     | smask_t::rounding_mode
-                                    | smask_t::post_ops_inplace,
+                                    | smask_t::post_ops_inplace
+                                    | smask_t::static_sbzp,
                             dst_type),
                     VERBOSE_UNSUPPORTED_ATTR);
             VDISPATCH_MATMUL(attr_.post_ops_.check_sum_consistency(dst_type,
@@ -116,11 +117,13 @@ struct ref_matmul_t : public primitive_t {
             CHECK(attr_scales_ok(engine,
                     {DNNL_ARG_SRC, DNNL_ARG_WEIGHTS, DNNL_ARG_DST},
                     {quantization_mode::static_sazp,
+                            quantization_mode::static_sbzp,
                             quantization_mode::dynamic_mx,
                             quantization_mode::dynamic_fp},
                     {{DNNL_ARG_SRC, {any_mask}}}));
             CHECK(attr_zero_points_ok(engine, {DNNL_ARG_WEIGHTS},
-                    {quantization_mode::static_sazp}));
+                    {quantization_mode::static_sazp,
+                            quantization_mode::static_sbzp}));
             VDISPATCH_MATMUL(set_default_formats(), VERBOSE_UNSUPPORTED_TAG);
             VDISPATCH_MATMUL(
                     attr_.set_default_formats(dst_md(0)) == status::success,

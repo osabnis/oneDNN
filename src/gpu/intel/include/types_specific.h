@@ -697,6 +697,12 @@
 #else
 #define WEI_ZP_TO_REF(zp, off) (zp[off])
 #endif
+// Floating-point zero-points (static_sbzp quantization mode).
+#if WEI_ZP_DT_BF16
+#define WEI_ZP_TO_FLOAT(zp, off) into_float(zp[off])
+#elif WEI_ZP_DT_F16
+#define WEI_ZP_TO_FLOAT(zp, off) convert_float(zp[off])
+#endif
 #endif
 
 #ifdef SRC_ZP_DATA_T

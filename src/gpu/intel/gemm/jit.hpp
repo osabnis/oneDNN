@@ -115,9 +115,22 @@ struct gen_t : public primitive_t {
                     | smask_t::scales | smask_t::scales_data_type
                     | smask_t::scales_groups | smask_t::precomputed_reductions
                     | smask_t::zero_points | smask_t::zero_points_data_type
-                    | smask_t::zero_points_groups | smask_t::post_ops_inplace;
+                    | smask_t::zero_points_groups | smask_t::post_ops_inplace
+                    | smask_t::static_sbzp;
             VDISPATCH_GEMM(attr()->has_default_values(attr_skip_mask),
                     VERBOSE_UNSUPPORTED_ATTR);
+
+            // Zero-points applied after the scales (static_sbzp) are
+            // supported for weights decompression, with grouped scales and
+            // zero-points on the weights. Per-channel weights scales are
+            // applied after the GEMM, which only works when zero-points come
+            // before the scales.
+            if (a_quant.zp_after_scale || b_quant.zp_after_scale) {
+                VDISPATCH_GEMM(wei_decomp_ && !b_quant.zp_after_scale,
+                        VERBOSE_UNSUPPORTED_ZP_CFG);
+                VDISPATCH_GEMM(
+                        a_zp_2d() && a_scales_2d(), VERBOSE_UNSUPPORTED_ZP_CFG);
+            }
             VDISPATCH_GEMM(
                     !utils::one_of(DNNL_RUNTIME_DIM_VAL, d->m(), d->n(), d->k(),
                             d->lda(), d->ldb(), d->ldc(), d->batch()),

@@ -185,6 +185,9 @@ int fill_zero_points(const attr_t &attr, int arg, dnn_mem_t &mem_dt,
         static constexpr int64_t chunk_size = 64;
         const int64_t n_chunks = div_up(nelems, chunk_size);
         const int min_val = MAX2(-2, static_cast<int>(lowest_dt(mem_dt.dt())));
+        // Zero-points applied after the scales (static_sbzp) are
+        // floating-point: use quarter steps in [-2, 2], exact in f16 and bf16.
+        const bool fp_zp = e.sbzp;
         benchdnn_parallel_nd(n_chunks, [&](int64_t idx_chunk) {
             int64_t idx_start = idx_chunk * chunk_size;
             int64_t idx_end = MIN2(idx_start + chunk_size, nelems);
@@ -195,10 +198,12 @@ int fill_zero_points(const attr_t &attr, int arg, dnn_mem_t &mem_dt,
             std::minstd_rand int_seed(idx_start + 1);
             int_seed.discard(1);
 
-            std::uniform_int_distribution<> gen(min_val, 2);
+            std::uniform_int_distribution<> gen(
+                    fp_zp ? -8 : min_val, fp_zp ? 8 : 2);
 
             for (int64_t idx = idx_start; idx < idx_end; ++idx) {
-                const float zp_val = gen(int_seed);
+                const float zp_val = fp_zp ? gen(int_seed) / 4.f
+                                           : static_cast<float>(gen(int_seed));
                 mem_fp.set_f32_elem(idx, zp_val);
             }
         });

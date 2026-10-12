@@ -205,7 +205,7 @@ __kernel void ref_matmul(__global SRC_DATA_T *A, __global WEI_DATA_T *B,
             long wei_zp_off = wei_zp_stride_n * (n / wei_zp_group_n)
                     + wei_zp_stride_k * (k / wei_zp_group_k)
                     + BATCH_OFF(wei_zp);
-#if !WITH_SRC_GROUP_SUMS
+#if !WITH_SRC_GROUP_SUMS && !WITH_WEI_SBZP
             wei_zp = WEI_ZP_TO_REF(b0, wei_zp_off);
 #endif
 #endif
@@ -228,7 +228,19 @@ __kernel void ref_matmul(__global SRC_DATA_T *A, __global WEI_DATA_T *B,
 #else
             ACC_DATA_T w_raw = WEI_TO_REF(B[wei_off]);
 #endif
+#if WITH_WEI_SBZP
+            // Scales applied before zero-points: the zero-point is a
+            // floating-point value subtracted from the scaled weight, so
+            // each weight is dequantized on its own.
+            long wei_scale_off_k = wei_scale_stride_n * (n / wei_scale_group_n)
+                    + wei_scale_stride_k * (k / wei_scale_group_k)
+                    + BATCH_OFF(wei_scale);
+            ACC_DATA_T w = TO_ACC(
+                    w_raw * WEI_SCALES_TO_REF(wei_scales[wei_scale_off_k])
+                    - WEI_ZP_TO_FLOAT(b0, wei_zp_off));
+#else
             ACC_DATA_T w = TO_ACC(w_raw - wei_zp);
+#endif
             acc_g += s * w;
 #if WITH_WEI_ZPOINTS && WITH_SRC_GROUP_SUMS
             wei_zp = WEI_ZP_TO_REF(b0, wei_zp_off);
@@ -244,7 +256,7 @@ __kernel void ref_matmul(__global SRC_DATA_T *A, __global WEI_DATA_T *B,
                 + BATCH_OFF(src_scale);
         src_scale = SRC_SCALES_TO_REF(src_scales[src_scale_off]);
 #endif
-#if WITH_WEI_SCALES
+#if WITH_WEI_SCALES && !WITH_WEI_SBZP
         long wei_scale_off = wei_scale_stride_n * (n / wei_scale_group_n)
                 + wei_scale_stride_k * (g * group_K / wei_scale_group_k)
                 + BATCH_OFF(wei_scale);
